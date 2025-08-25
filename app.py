@@ -29,8 +29,8 @@ class AcordParser:
         "Operations Contact Email automated policy related emails will be sent to this email",
         "Accounting Contact Name",
         "Accounting Contact Email used for commission statement delivery",
+        "Agency License State",
         "Agency License Number",
-        "Agency License Number_2",
         "Agency National Producer Number NPN",
         "Main Producer Name",
         "Main Producer Email",
@@ -52,8 +52,8 @@ class AcordParser:
         "Operations Contact Email automated policy related emails will be sent to this email": "Operations Contact Email",
         "Accounting Contact Name": "Accounting Contact Name",
         "Accounting Contact Email used for commission statement delivery": "Accounting Contact Email",
+        "Agency License State": "Agency License State",
         "Agency License Number": "Agency License Number",
-        "Agency License Number_2": "Agency License Number (alt)",
         "Agency National Producer Number NPN": "Agency NPN",
         "Main Producer Name": "Main Producer Name",
         "Main Producer Email": "Main Producer Email",
@@ -64,7 +64,7 @@ class AcordParser:
     @staticmethod
     def parse_flat_text(text: str, source_file: str) -> dict:
         """Parse pdfplumber text block into the same schema as FIELD_MAP."""
-        data = {field: "" for field in AcordParser.FIELD_MAP}  # all keys exist
+        data = {field: "" for field in AcordParser.FIELD_MAP}
 
         def extract(pattern, text, group=1):
             m = re.search(pattern, text, re.IGNORECASE)
@@ -78,7 +78,7 @@ class AcordParser:
         data["Zip Code"] = extract(r"Zip Code:\s*([\d\-]+)\s*State:", text)
         data["State"] = extract(r"State:\s*([A-Z]{2})", text)
 
-        # Mailing (normalize to *_2 fields)
+        # Mailing
         data["Mail Address If different from physical address"] = extract(
             r"Mail Address.*?:\s*(.+)", text
         )
@@ -101,7 +101,8 @@ class AcordParser:
         )
 
         # Licensing
-        data["Agency License Number"] = extract(r"Agency License Number:\s*([\w\d]+)", text)
+        data["Agency License State"] = extract(r"Agency License State:\s*([A-Z]{2})", text)
+        data["Agency License Number"] = extract(r"Agency License Number:\s*([A-Za-z0-9\-]+)", text)
         data["Agency National Producer Number NPN"] = extract(
             r"Agency National Producer Number.*?:\s*([\d]+)", text
         )
@@ -121,7 +122,6 @@ class AcordParser:
         reader = PdfReader(pdf_file)
         fields = reader.get_fields() or {}
 
-        # Check if any desired fields exist
         found = any(f in fields for f in AcordParser.FIELD_MAP)
 
         if found:
@@ -132,8 +132,22 @@ class AcordParser:
                 if v:
                     val = v.get("/V") or v.get("V") or ""
                 values[f] = str(val) if val is not None else ""
+
+            # --- Normalize license fields ---
+            state_val = values.get("Agency License Number", "").strip()
+            num_val = fields.get("Agency License Number_2", {})
+            num_val = str(num_val.get("/V") or num_val.get("V") or "").strip()
+
+            if re.fullmatch(r"[A-Z]{2}", state_val):
+                values["Agency License State"] = state_val
+                values["Agency License Number"] = num_val
+            else:
+                values["Agency License State"] = ""
+                values["Agency License Number"] = state_val
+
             values["Source File"] = pdf_file.name
             return values
+
         else:
             with pdfplumber.open(pdf_file) as pdf:
                 if page_number - 1 < len(pdf.pages):
