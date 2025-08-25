@@ -12,19 +12,31 @@ class AcordParser:
     """
 
     @staticmethod
-    def extract_form_fields(pdf_file) -> dict:
+    def extract_form_fields(pdf_file, page_number: int = None) -> dict:
         reader = PdfReader(pdf_file)
         fields = reader.get_fields() or {}
+
+        # Optionally filter to one page (1-based index for convenience)
+        if page_number is not None and 0 <= page_number - 1 < len(reader.pages):
+            page = reader.pages[page_number - 1]
+            page_annots = page.get("/Annots") or []
+            page_field_names = set()
+
+            for annot_ref in page_annots:
+                annot = annot_ref.get_object()
+                if "/T" in annot:
+                    page_field_names.add(annot["/T"])
+
+            # Reduce to only fields from this page
+            fields = {k: v for k, v in fields.items() if k in page_field_names}
 
         # Flatten into dict {field_name: value}
         values = {}
         for name, f in fields.items():
             val = f.get("/V") or f.get("V") or ""
-            if val is None:
-                val = ""
-            values[name] = str(val)
+            values[name] = str(val) if val is not None else ""
 
-        # Map into the desired order (using your CSV field names)
+        # Map into your schema (same as before)
         ordered_data = {
             "Agency Name": values.get("Agency Name", ""),
             "Agency Phone Number": values.get("Agency Phone Number", ""),
@@ -49,6 +61,7 @@ class AcordParser:
         }
 
         return ordered_data
+
 
     @staticmethod
     def generate_excel(all_forms: pd.DataFrame) -> BytesIO:
@@ -77,7 +90,7 @@ def main():
         all_data = []
         with st.spinner("Extracting form fields..."):
             for file in uploaded_files:
-                parsed = AcordParser.extract_form_fields(file)
+                parsed = AcordParser.extract_form_fields(file, page_number=21)
                 parsed["Source File"] = file.name  # new role/column to track file of origin
                 all_data.append(parsed)
 
