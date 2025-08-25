@@ -11,6 +11,7 @@ class AcordParser:
     """
     Extracts AcroForm fields if available.
     If missing, falls back to pdfplumber text parsing (page 21).
+    Always returns keys from FIELD_MAP.
     """
 
     FIELD_MAP = [
@@ -36,10 +37,34 @@ class AcordParser:
         "Main Producer National Producer Number NPN",
     ]
 
+    DISPLAY_MAP = {
+        "Agency Name": "Agency Name",
+        "Agency Phone Number": "Agency Phone Number",
+        "Physical Address": "Physical Address",
+        "City": "City (Physical)",
+        "Zip Code": "Zip Code (Physical)",
+        "State": "State (Physical)",
+        "Mail Address If different from physical address": "Mail Address",
+        "City_2": "City (Mailing)",
+        "Zip Code_2": "Zip Code (Mailing)",
+        "State_2": "State (Mailing)",
+        "Operations Contact Name": "Operations Contact Name",
+        "Operations Contact Email automated policy related emails will be sent to this email": "Operations Contact Email",
+        "Accounting Contact Name": "Accounting Contact Name",
+        "Accounting Contact Email used for commission statement delivery": "Accounting Contact Email",
+        "Agency License Number": "Agency License Number",
+        "Agency License Number_2": "Agency License Number (alt)",
+        "Agency National Producer Number NPN": "Agency NPN",
+        "Main Producer Name": "Main Producer Name",
+        "Main Producer Email": "Main Producer Email",
+        "Main Producer National Producer Number NPN": "Main Producer NPN",
+        "Source File": "Source File"
+    }
+
     @staticmethod
     def parse_flat_text(text: str, source_file: str) -> dict:
-        """Parse pdfplumber text block into the same schema as AcroForm fields."""
-        data = {}
+        """Parse pdfplumber text block into the same schema as FIELD_MAP."""
+        data = {field: "" for field in AcordParser.FIELD_MAP}  # all keys exist
 
         def extract(pattern, text, group=1):
             m = re.search(pattern, text, re.IGNORECASE)
@@ -49,38 +74,42 @@ class AcordParser:
         data["Agency Name"] = extract(r"Agency Name:\s*(.+)", text)
         data["Agency Phone Number"] = extract(r"Agency Phone Number:\s*([\d\.\-\(\)\s]+)", text)
         data["Physical Address"] = extract(r"Physical Address:\s*(.+)", text)
-        data["City (Physical)"] = extract(r"City:\s*([A-Za-z\s]+)\s*Zip Code:", text)
-        data["Zip Code (Physical)"] = extract(r"Zip Code:\s*([\d\-]+)\s*State:", text)
-        data["State (Physical)"] = extract(r"State:\s*([A-Z]{2})", text)
+        data["City"] = extract(r"City:\s*([A-Za-z\s]+)\s*Zip Code:", text)
+        data["Zip Code"] = extract(r"Zip Code:\s*([\d\-]+)\s*State:", text)
+        data["State"] = extract(r"State:\s*([A-Z]{2})", text)
 
-        # Mailing
-        data["Mail Address"] = extract(r"Mail Address.*?:\s*(.+)", text)
-        data["City (Mailing)"] = extract(r"Mail Address.*?\nCity:\s*([A-Za-z\s]+)\s*Zip Code:", text)
-        data["Zip Code (Mailing)"] = extract(r"Mail Address.*?\nCity:.*?Zip Code:\s*([\d\-]+)\s*State:", text)
-        data["State (Mailing)"] = extract(r"Mail Address.*?\nCity:.*?State:\s*([A-Z]{2})", text)
-
+        # Mailing (normalize to *_2 fields)
+        data["Mail Address If different from physical address"] = extract(
+            r"Mail Address.*?:\s*(.+)", text
+        )
+        data["City_2"] = extract(r"Mail Address.*?\nCity:\s*([A-Za-z\s]+)\s*Zip Code:", text)
+        data["Zip Code_2"] = extract(
+            r"Mail Address.*?\nCity:.*?Zip Code:\s*([\d\-]+)\s*State:", text
+        )
+        data["State_2"] = extract(
+            r"Mail Address.*?\nCity:.*?State:\s*([A-Z]{2})", text
+        )
 
         # Contacts
         data["Operations Contact Name"] = extract(r"Operations Contact Name:\s*(.+)", text)
-        data["Operations Contact Email"] = extract(
+        data["Operations Contact Email automated policy related emails will be sent to this email"] = extract(
             r"Operations Contact Email.*?:\s*([\w\.-]+@[\w\.-]+)", text
         )
         data["Accounting Contact Name"] = extract(r"Accounting Contact Name:\s*(.+)", text)
-        data["Accounting Contact Email"] = extract(
+        data["Accounting Contact Email used for commission statement delivery"] = extract(
             r"Accounting Contact Email.*?:\s*([\w\.-]+@[\w\.-]+)", text
         )
 
         # Licensing
-        data["Agency License State"] = extract(r"Agency License State:\s*([A-Z]{2})", text)
         data["Agency License Number"] = extract(r"Agency License Number:\s*([\w\d]+)", text)
-        data["Agency National Producer Number (NPN)"] = extract(
+        data["Agency National Producer Number NPN"] = extract(
             r"Agency National Producer Number.*?:\s*([\d]+)", text
         )
 
         # Main Producer
         data["Main Producer Name"] = extract(r"Main Producer Name:\s*(.+?)\s+Main Producer Email:", text)
         data["Main Producer Email"] = extract(r"Main Producer Email:\s*([\w\.-]+@[\w\.-]+)", text)
-        data["Main Producer NPN"] = extract(
+        data["Main Producer National Producer Number NPN"] = extract(
             r"Main Producer National Producer Number.*?:\s*([\d]+)", text
         )
 
@@ -92,23 +121,20 @@ class AcordParser:
         reader = PdfReader(pdf_file)
         fields = reader.get_fields() or {}
 
-        # Check if any of our desired fields exist
+        # Check if any desired fields exist
         found = any(f in fields for f in AcordParser.FIELD_MAP)
 
         if found:
-            values = {}
+            values = {field: "" for field in AcordParser.FIELD_MAP}
             for f in AcordParser.FIELD_MAP:
                 v = fields.get(f, {})
                 val = ""
                 if v:
                     val = v.get("/V") or v.get("V") or ""
                 values[f] = str(val) if val is not None else ""
-
             values["Source File"] = pdf_file.name
             return values
-
         else:
-            # Fallback to pdfplumber text parsing
             with pdfplumber.open(pdf_file) as pdf:
                 if page_number - 1 < len(pdf.pages):
                     page = pdf.pages[page_number - 1]
@@ -121,7 +147,9 @@ class AcordParser:
     def generate_excel(all_forms: pd.DataFrame) -> BytesIO:
         output = BytesIO()
         with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-            all_forms.to_excel(writer, sheet_name="Results", index=False)
+            all_forms.rename(columns=AcordParser.DISPLAY_MAP).to_excel(
+                writer, sheet_name="Results", index=False
+            )
         output.seek(0)
         return output
 
@@ -152,6 +180,9 @@ def main():
                 all_data.append(parsed)
 
         df = pd.DataFrame(all_data)
+
+        # Apply display names for UI and Excel
+        df_display = df.rename(columns=AcordParser.DISPLAY_MAP)
         excel_file = AcordParser.generate_excel(df)
 
         st.success("Extraction complete.")
@@ -163,7 +194,7 @@ def main():
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        st.dataframe(df)
+        st.dataframe(df_display)
 
 
 if __name__ == "__main__":
